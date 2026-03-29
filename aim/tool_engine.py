@@ -15,6 +15,14 @@ from typing import TYPE_CHECKING
 import anthropic
 
 from aim.ableton_bridge import bridge
+from aim.analysis import (
+    run_analyze_audio,
+    run_analyze_beats,
+    run_analyze_stem,
+    run_audio_to_midi,
+    run_separate_stems,
+    run_load_audio_to_track,
+)
 from aim.prompts import build_system_prompt
 from aim.tools import ALL_TOOLS
 
@@ -39,7 +47,35 @@ COMMAND_MAP: dict[str, tuple[str, callable]] = {
 }
 
 
+# ── 本地执行工具（不经过 Ableton socket） ────────────────────────────────────
+
+LOCAL_TOOLS: dict[str, callable] = {
+    "analyze_audio": run_analyze_audio,
+    "analyze_beats": run_analyze_beats,
+    "analyze_stem": run_analyze_stem,
+    "audio_to_midi": run_audio_to_midi,
+    "separate_stems": run_separate_stems,
+    "load_audio_to_track": run_load_audio_to_track,
+}
+
+
 # ── 工具执行 ──────────────────────────────────────────────────────────────────
+
+# 返回大量数据的工具需要更高的截断限制
+RESULT_LIMIT: dict[str, int] = {
+    "get_device_parameters": 2000,
+    "get_track_info": 1000,
+    "get_clip_notes": 2000,
+    "get_session_info": 500,
+    "analyze_audio": 2000,
+    "analyze_beats": 2000,
+    "analyze_stem": 2000,
+    "audio_to_midi": 3000,
+    "separate_stems": 1000,
+    "load_audio_to_track": 500,
+}
+DEFAULT_RESULT_LIMIT = 200
+
 
 def execute_tool(tool_name: str, tool_input: dict) -> str:
     """路由工具调用，返回字符串结果。
@@ -49,7 +85,7 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
         tool_input: Claude 传入的参数 dict。
 
     Returns:
-        JSON 字符串（截断至 200 字符），或 "error: ..." 字符串。
+        JSON 字符串（按工具截断），或 "error: ..." 字符串。
     """
     # 前置校验：add_notes_to_clip 必须有 notes 且不为空
     if tool_name == "add_notes_to_clip":
@@ -57,8 +93,16 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
         if not notes:
             return "error: notes 参数缺失或为空，请重新调用并传入完整的 notes 数组"
 
-    # 路由：有映射的走 COMMAND_MAP，其余直接透传
-    if tool_name in COMMAND_MAP:
+    # 值域钳制：Remote Script 不做范围校验
+    if tool_name == "set_track_volume":
+        tool_input["volume"] = max(0.0, min(1.0, tool_input.get("volume", 0.85)))
+    elif tool_name == "set_track_panning":
+        tool_input["panning"] = max(-1.0, min(1.0, tool_input.get("panning", 0.0)))
+
+    # 路由：本地工具 → COMMAND_MAP → 透传 bridge
+    if tool_name in LOCAL_TOOLS:
+        result = LOCAL_TOOLS[tool_name](tool_input)
+    elif tool_name in COMMAND_MAP:
         cmd, transformer = COMMAND_MAP[tool_name]
         params = transformer(tool_input)
         result = bridge.call(cmd, params)
@@ -67,7 +111,8 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
 
     if "error" in result:
         return f"error: {result['error']}"
-    return json.dumps(result, ensure_ascii=False)[:200]
+    limit = RESULT_LIMIT.get(tool_name, DEFAULT_RESULT_LIMIT)
+    return json.dumps(result, ensure_ascii=False)[:limit]
 
 
 # ── Claude API 调用循环 ────────────────────────────────────────────────────────

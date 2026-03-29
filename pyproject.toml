@@ -1,0 +1,22 @@
+[project]
+name = "aim"
+version = "0.2.5"
+description = "Ableton Interact Machine — 用自然语言控制 Ableton Live"
+requires-python = ">=3.10"
+dependencies = [
+    "anthropic",
+]
+
+# ⚠️ 许可证警告：analysis 依赖组包含 essentia（AGPL-3.0）。
+# AGPL 具有传染性——如果 AIM 对外分发（发布、出售、提供 SaaS），
+# 整个项目必须以 AGPL-3.0 发布，所有源代码必须公开。
+# 个人使用不受影响。详见 BLUEPRINT.md ADR-009。
+[project.optional-dependencies]
+analysis = ["essentia"]
+midi = ["basic-pitch>=0.3"]
+stems = ["demucs>=4.0"]
+all-analysis = [
+    "essentia",
+    "basic-pitch>=0.3",
+    "demucs>=4.0",
+]
