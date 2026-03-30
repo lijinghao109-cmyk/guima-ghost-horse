@@ -98,50 +98,66 @@ def _compute_energy_curve(audio, n_points: int = 8) -> list[float]:
 
 
 def _estimate_sections(audio, sr: int = 44100) -> list[dict]:
-    """用 essentia SBic 估计曲式段落边界。"""
+    """用自相似矩阵 + checkerboard kernel 检测段落边界。"""
     import numpy as np
-    from essentia.standard import (
-        FrameGenerator, Windowing, Spectrum, MFCC, SBic,
-    )
+    import librosa
+    from scipy.signal import find_peaks
 
     duration = len(audio) / sr
-
-    # 提取 MFCC 特征矩阵
-    mfccs = []
-    for frame in FrameGenerator(audio, frameSize=2048, hopSize=1024):
-        windowed = Windowing(type="hann")(frame)
-        spectrum = Spectrum()(windowed)
-        _, mfcc_coeffs = MFCC(numberCoefficients=13)(spectrum)
-        mfccs.append(mfcc_coeffs)
-
-    if len(mfccs) < 10:
-        # 太短，返回单段
+    if duration < 10:
         return [{"label": "full", "start": 0.0, "end": round(duration, 1)}]
 
-    mfcc_matrix = np.array(mfccs)
+    # 提取 MFCC + Mel 频谱组合特征
+    hop = 2048
+    mfcc = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=20, hop_length=hop)
+    mel = librosa.feature.melspectrogram(y=audio, sr=sr, hop_length=hop, n_mels=40)
+    mel_db = librosa.power_to_db(mel)
+    features = np.vstack([mfcc, mel_db])
+    features = librosa.util.normalize(features, axis=0)
 
-    try:
-        sbic = SBic(minLength=10, inc1=60, inc2=20)
-        boundaries = sbic(mfcc_matrix)
-        # boundaries 是帧索引，转为秒
-        hop_duration = 1024 / sr
-        boundary_times = sorted(set([0.0] + [round(float(b) * hop_duration, 1) for b in boundaries] + [round(duration, 1)]))
-    except Exception:
-        # SBic 失败时回退到均分
-        n_segments = min(8, max(2, int(duration / 15)))
-        segment_len = duration / n_segments
-        boundary_times = [round(i * segment_len, 1) for i in range(n_segments + 1)]
+    # 自相似矩阵
+    sim = features.T @ features
+
+    # Checkerboard kernel 新奇度曲线
+    kernel_size = 32
+    novelty = np.zeros(sim.shape[0])
+    for i in range(kernel_size, sim.shape[0] - kernel_size):
+        tl = sim[i - kernel_size:i, i - kernel_size:i].mean()
+        br = sim[i:i + kernel_size, i:i + kernel_size].mean()
+        tr = sim[i - kernel_size:i, i:i + kernel_size].mean()
+        bl = sim[i:i + kernel_size, i - kernel_size:i].mean()
+        novelty[i] = (tl + br) - (tr + bl)
+
+    novelty = np.maximum(novelty, 0)
+    if novelty.max() > 0:
+        novelty /= novelty.max()
+
+    # 找峰值（最小段落间隔 15 秒）
+    min_distance = max(1, int(15 * sr / hop))
+    peaks, _ = find_peaks(novelty, height=0.08, distance=min_distance, prominence=0.03)
+    hop_duration = hop / sr
+    peak_times = [round(float(p) * hop_duration, 1) for p in peaks]
+
+    # 构建边界，合并过短的尾段（< 8 秒）
+    boundary_times = [0.0] + peak_times + [round(duration, 1)]
+    if len(boundary_times) > 2 and (boundary_times[-1] - boundary_times[-2]) < 8:
+        boundary_times.pop(-2)
+
+    # 限制最多 8 段
+    boundary_times = boundary_times[:9]
+    if boundary_times[-1] < round(duration, 1):
+        boundary_times[-1] = round(duration, 1)
 
     labels = ["intro", "verse", "chorus", "bridge", "verse", "chorus", "bridge", "outro"]
     sections = []
     for i in range(len(boundary_times) - 1):
-        label = labels[i] if i < len(labels) else f"section_{i+1}"
+        label = labels[i] if i < len(labels) else f"section_{i + 1}"
         sections.append({
             "label": label,
             "start": boundary_times[i],
             "end": boundary_times[i + 1],
         })
-    return sections[:8]  # 最多 8 段
+    return sections
 
 
 # ── 公开函数 ──────────────────────────────────────────────────────────────────
