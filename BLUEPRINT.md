@@ -372,6 +372,10 @@ get_track_routing_info(track_index)        # 查看路由信息
 - [ ] Socket 超时 15 秒硬编码在 `AbletonBridge.__init__()` 中——是否应抽为配置项？（风险表已提及）
 - [ ] 模型版本 `claude-sonnet-4-6` 硬编码在 `tool_engine.py`——是否外置到 `.env` 或配置文件？
 - [x] ~~工具结果截断为 200 字符（`tool_engine.py`）——对复杂 `session_info` 响应是否足够？~~
+
+### Phase 2.5 新增问题
+
+- [ ] `audio_to_midi` 当前使用 librosa `piptrack`（频谱峰值检测），精度不如 basic-pitch（神经网络）。basic-pitch 因 TensorFlow 不兼容 Python 3.13 而暂时无法使用。待 basic-pitch 或 TF 更新后切回，或在 Python 3.12 venv 中单独运行。
   *已决：Phase 2 实现了 per-tool 截断限制（RESULT_LIMIT dict），get_device_parameters/get_clip_notes 2000 字符，get_track_info 1000 字符，默认 200。*
 
 ---
