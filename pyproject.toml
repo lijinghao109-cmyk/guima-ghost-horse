@@ -12,7 +12,7 @@ dependencies = [
 # 整个项目必须以 AGPL-3.0 发布，所有源代码必须公开。
 # 个人使用不受影响。详见 BLUEPRINT.md ADR-009。
 [project.optional-dependencies]
-analysis = ["essentia"]
+analysis = ["essentia", "librosa>=0.10", "scipy"]
 midi = ["librosa>=0.10", "pretty_midi"]
 stems = ["demucs>=4.0"]
 all-analysis = [
