@@ -13,10 +13,11 @@ dependencies = [
 # 个人使用不受影响。详见 BLUEPRINT.md ADR-009。
 [project.optional-dependencies]
 analysis = ["essentia"]
-midi = ["basic-pitch>=0.3"]
+midi = ["librosa>=0.10", "pretty_midi"]
 stems = ["demucs>=4.0"]
 all-analysis = [
     "essentia",
-    "basic-pitch>=0.3",
+    "librosa>=0.10",
+    "pretty_midi",
     "demucs>=4.0",
 ]
