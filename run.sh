@@ -1,4 +1,5 @@
 #!/bin/bash
 cd "/Users/nageshei/ableton interact machine"
 export $(grep -v '^#' .env | xargs)
-python3 -m aim
+source .venv/bin/activate
+python -m aim

@@ -223,12 +223,19 @@ def run_analyze_beats(params: dict) -> dict:
         bpm, beat_times, beats_confidence, _, _ = rhythm(audio)
         bpm = float(bpm)
 
-        # onset 强度（利用 beats_confidence 作为每拍的 onset 强度）
-        max_conf = float(max(beats_confidence)) if len(beats_confidence) > 0 else 1.0
-        if max_conf > 0:
-            onset_strengths = [round(float(c) / max_conf, 2) for c in beats_confidence]
-        else:
-            onset_strengths = [0.0] * len(beats_confidence)
+        # onset 强度：用每拍附近的音频能量估算
+        import numpy as np
+        onset_strengths = []
+        half_window = int(0.05 * sr)  # 50ms 窗口
+        for bt in beat_times:
+            center = int(float(bt) * sr)
+            start_s = max(0, center - half_window)
+            end_s = min(len(audio), center + half_window)
+            rms = float(np.sqrt(np.mean(audio[start_s:end_s] ** 2)))
+            onset_strengths.append(rms)
+        max_rms = max(onset_strengths) if onset_strengths else 1.0
+        if max_rms > 0:
+            onset_strengths = [round(v / max_rms, 2) for v in onset_strengths]
 
         # groove 偏移
         if len(beat_times) >= 2:
@@ -257,7 +264,7 @@ def run_analyze_stem(params: dict) -> dict:
     """对单个 stem 进行类型感知分析。"""
     try:
         import essentia  # noqa: F401
-        from essentia.standard import OnsetDetection, Onsets, FrameGenerator, Windowing, FFT, CartesianToPolar
+        from essentia.standard import FrameGenerator, Windowing
     except ImportError:
         return {"error": _IMPORT_ERROR_MSG}
 
@@ -280,31 +287,32 @@ def run_analyze_stem(params: dict) -> dict:
         result = {"stem_type": stem_type, "duration_seconds": duration}
 
         if stem_type == "drums":
-            # 鼓：onset 网格和节奏密度
-            od = OnsetDetection(method="complex")
-            w = Windowing(type="hann")
-            fft = FFT()
-            c2p = CartesianToPolar()
+            # 鼓：用 RhythmExtractor2013 提取节拍 + 用能量做 onset 密度
+            from essentia.standard import RhythmExtractor2013
+            rhythm = RhythmExtractor2013()
+            bpm, beats, _, _, _ = rhythm(audio)
 
-            onsets_matrix = []
-            for frame in FrameGenerator(audio, frameSize=1024, hopSize=512):
-                windowed = w(frame)
-                fft_result = fft(windowed)
-                mag, phase = c2p(fft_result)
-                onset_val = od(mag, phase)
-                onsets_matrix.append([onset_val])
+            # 用能量阈值检测 onset
+            hop = 512
+            frame_size = 1024
+            energies = []
+            for frame in FrameGenerator(audio, frameSize=frame_size, hopSize=hop):
+                energies.append(float(np.sqrt(np.mean(frame ** 2))))
+            energies = np.array(energies)
+            threshold = np.mean(energies) + 1.5 * np.std(energies)
+            onset_frames = np.where(energies > threshold)[0]
+            # 去除过近的 onset（最小间隔 50ms）
+            min_gap = int(0.05 * sr / hop)
+            filtered = [onset_frames[0]] if len(onset_frames) > 0 else []
+            for f in onset_frames[1:]:
+                if f - filtered[-1] >= min_gap:
+                    filtered.append(f)
+            onset_times_sec = [round(float(f) * hop / sr, 3) for f in filtered]
 
-            onsets_matrix = np.array(onsets_matrix)
-            onsets_detector = Onsets(frameRate=sr / 512)
-            onset_times = onsets_detector(onsets_matrix, [1.0])
-
-            max_strength = float(np.max(onsets_matrix)) if len(onsets_matrix) > 0 else 1.0
-            result["onset_count"] = len(onset_times)
-            result["onsets"] = [
-                {"time": round(float(t), 3)}
-                for t in onset_times[:64]
-            ]
-            result["density_per_second"] = round(len(onset_times) / max(duration, 0.1), 1)
+            result["bpm"] = round(float(bpm), 1)
+            result["onset_count"] = len(onset_times_sec)
+            result["onsets"] = [{"time": t} for t in onset_times_sec[:64]]
+            result["density_per_second"] = round(len(onset_times_sec) / max(duration, 0.1), 1)
 
         elif stem_type == "bass":
             # 贝斯：调性 + 主要音高
@@ -330,20 +338,21 @@ def run_analyze_stem(params: dict) -> dict:
                 top_indices = np.argsort(hpcp_mean)[::-1][:5]
                 result["dominant_notes"] = [_KEY_NAMES[int(i)] for i in top_indices]
 
-            # onset 时间
-            od = OnsetDetection(method="hfc")
-            w = Windowing(type="hann")
-            fft = FFT()
-            c2p = CartesianToPolar()
-            onsets_list = []
-            for frame in FrameGenerator(audio, frameSize=1024, hopSize=512):
-                windowed = w(frame)
-                fft_result = fft(windowed)
-                mag, phase = c2p(fft_result)
-                onsets_list.append([od(mag, phase)])
-            onsets_detector = Onsets(frameRate=sr / 512)
-            onset_times = onsets_detector(np.array(onsets_list), [1.0])
-            result["note_onsets"] = [round(float(t), 3) for t in onset_times[:32]]
+            # onset 时间（能量阈值法）
+            hop = 512
+            frame_size = 1024
+            energies = []
+            for frame in FrameGenerator(audio, frameSize=frame_size, hopSize=hop):
+                energies.append(float(np.sqrt(np.mean(frame ** 2))))
+            energies = np.array(energies)
+            threshold = np.mean(energies) + 1.5 * np.std(energies)
+            onset_frames = np.where(energies > threshold)[0]
+            min_gap = int(0.05 * sr / hop)
+            filtered = [onset_frames[0]] if len(onset_frames) > 0 else []
+            for f in onset_frames[1:]:
+                if f - filtered[-1] >= min_gap:
+                    filtered.append(f)
+            result["note_onsets"] = [round(float(f) * hop / sr, 3) for f in filtered[:32]]
 
         elif stem_type == "vocals":
             # 人声：调性 + 音高轮廓
